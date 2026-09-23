@@ -4,3 +4,4 @@
 
 -- Exit insert mode without reaching for Esc
 vim.keymap.set("i", "jk", "<Esc>", { desc = "Exit insert mode" })
+vim.keymap.set("i", "jj", "<Esc>", { desc = "Exit insert mode" })
