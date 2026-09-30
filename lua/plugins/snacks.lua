@@ -25,6 +25,14 @@ return {
         files = {
           hidden = true,
           ignored = true,
+          matcher = {
+            sort_empty = true,
+            frecency = true,
+            history_bonus = true,
+          },
+        },
+        buffers = {
+          sort_lastused = true,
         },
         grep = {
           hidden = true,
