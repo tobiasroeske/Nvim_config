@@ -13,3 +13,8 @@ vim.keymap.set("n", "<Up>", "<cmd>resize +2<cr>", { desc = "Increase Window Heig
 vim.keymap.set("n", "<Down>", "<cmd>resize -2<cr>", { desc = "Decrease Window Height" })
 vim.keymap.set("n", "<Left>", "<cmd>vertical resize -2<cr>", { desc = "Decrease Window Width" })
 vim.keymap.set("n", "<Right>", "<cmd>vertical resize +2<cr>", { desc = "Increase Window Width" })
+
+-- Open In File Explorer
+vim.keymap.set("n", "<leader>fX", function()
+  vim.cmd([[!explorer.exe "%:p:h"]])
+end, { desc = "Ordner der aktuellen Datei im Windows Explorer öffnen" })
