@@ -1,11 +1,12 @@
 return {
   "okuuva/auto-save.nvim",
   cmd = "ASToggle",
-  event = { "InsertLeave", "TextChanged" },
+  event = "VeryLazy",
   opts = {
     trigger_events = {
       immediate_save = { "BufLeave", "FocusLost" },
+      defer_save = {},
     },
-    debounce_delay = 1000,
+    noautocmd = true,
   },
 }

@@ -16,5 +16,17 @@ vim.keymap.set("n", "<Right>", "<cmd>vertical resize +2<cr>", { desc = "Increase
 
 -- Open In File Explorer
 vim.keymap.set("n", "<leader>fX", function()
-  vim.cmd([[!explorer.exe "%:p:h"]])
+  local dir = vim.fn.expand("%:p:h")
+
+  if vim.fn.has("win32") == 1 or vim.fn.has("win64") == 1 then
+    dir = dir:gsub("/", "\\")
+    vim.cmd("!explorer.exe " .. vim.fn.shellescape(dir))
+  elseif vim.fn.has("macunix") == 1 then
+    vim.cmd("!open " .. vim.fn.shellescape(dir))
+  end
 end, { desc = "Ordner der aktuellen Datei im Windows Explorer öffnen" })
+
+-- Floating Temrinal
+vim.keymap.set("n", "<C-t>", function()
+  Snacks.terminal(nil, { cwd = LazyVim.root() })
+end, { desc = "Toggle Terminal (Root Dir)" })
