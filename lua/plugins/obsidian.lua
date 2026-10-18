@@ -230,6 +230,21 @@ return {
     },
   },
   {
+    "MeanderingProgrammer/render-markdown.nvim",
+    opts = {
+      -- Render checkboxes, including the Obsidian task states
+      checkbox = {
+        enabled = true,
+        custom = {
+          todo = { raw = "[-]", rendered = "󰥔 ", highlight = "RenderMarkdownTodo" },
+          forward = { raw = "[>]", rendered = " ", highlight = "RenderMarkdownInfo" },
+          cancelled = { raw = "[~]", rendered = "󰰱 ", highlight = "RenderMarkdownError" },
+          important = { raw = "[!]", rendered = " ", highlight = "RenderMarkdownWarn" },
+        },
+      },
+    },
+  },
+  {
     "mfussenegger/nvim-lint",
     opts = {
       linters = {
