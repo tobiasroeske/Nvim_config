@@ -25,8 +25,3 @@ vim.keymap.set("n", "<leader>fX", function()
     vim.cmd("!open " .. vim.fn.shellescape(dir))
   end
 end, { desc = "Ordner der aktuellen Datei im Windows Explorer öffnen" })
-
--- Floating Temrinal
-vim.keymap.set("n", "<C-t>", function()
-  Snacks.terminal(nil, { cwd = LazyVim.root() })
-end, { desc = "Toggle Terminal (Root Dir)" })

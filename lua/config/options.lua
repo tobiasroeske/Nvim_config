@@ -19,3 +19,5 @@ else
   vim.o.shell = "powershell.exe"
 end
 vim.o.shellcmdflag = shellcmdflag
+vim.g.lazyvim_php_lsp = "intelephense"
+vim.g.lazyvim_ts_lsp = "tsgo"
