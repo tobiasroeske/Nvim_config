@@ -41,7 +41,8 @@ local function nvim_remote(target, line)
   return nv .. "--remote " .. target .. " && " .. nv .. '--remote-send "' .. keys .. '"'
 end
 
-local panel_height = 0.3
+local toggle_panel, new_terminal
+local editor_win
 
 -- Panel-Terminals sind Snacks-Terminals ohne eigenen Befehl (lazygit & Co. bleiben aussen vor)
 local function panel_terms()
@@ -51,23 +52,44 @@ local function panel_terms()
   end, Snacks.terminal.list())
 end
 
-local function fix_height()
-  vim.schedule(function()
-    for _, t in ipairs(panel_terms()) do
-      if t:win_valid() then
-        vim.api.nvim_win_set_height(t.win, math.floor(vim.o.lines * panel_height))
-      end
-    end
-  end)
+-- Fenster merken, aus dem das Panel geöffnet wurde, damit der Fokus beim Schliessen dorthin zurückgeht
+local function remember_editor_win()
+  if not vim.b.snacks_terminal then
+    editor_win = vim.api.nvim_get_current_win()
+  end
 end
 
 local function open_panel_terminal(count)
-  Snacks.terminal.open(nil, { cwd = LazyVim.root(), count = count, win = { position = "bottom" } })
-  fix_height()
+  Snacks.terminal.open(nil, {
+    cwd = LazyVim.root(),
+    count = count,
+    win = {
+      position = "bottom",
+      height = 0.3,
+      keys = {
+        toggle_panel = {
+          "<C-t>",
+          function()
+            toggle_panel()
+          end,
+          mode = { "n", "t" },
+          desc = "Toggle Terminal Panel",
+        },
+        new_terminal = {
+          "<A-n>",
+          function()
+            new_terminal()
+          end,
+          mode = { "n", "t" },
+          desc = "New Terminal",
+        },
+      },
+    },
+  })
 end
 
 -- Alle Panel-Terminals ein-/ausblenden, beim ersten Aufruf eins erstellen
-local function toggle_panel()
+function toggle_panel()
   local terms = panel_terms()
   local visible = vim.tbl_filter(function(t)
     return t:win_valid()
@@ -76,18 +98,24 @@ local function toggle_panel()
     for _, t in ipairs(visible) do
       t:hide()
     end
-  elseif #terms > 0 then
-    for _, t in ipairs(terms) do
-      t:show()
+    if editor_win and vim.api.nvim_win_is_valid(editor_win) then
+      vim.api.nvim_set_current_win(editor_win)
     end
-    fix_height()
   else
-    open_panel_terminal(1)
+    remember_editor_win()
+    if #terms > 0 then
+      for _, t in ipairs(terms) do
+        t:show()
+      end
+    else
+      open_panel_terminal(1)
+    end
   end
 end
 
 -- Weiteres Terminal neben den bestehenden im Panel öffnen
-local function new_terminal()
+function new_terminal()
+  remember_editor_win()
   local next_id = 1
   for _, t in ipairs(panel_terms()) do
     if not t:win_valid() then
@@ -101,25 +129,23 @@ local function new_terminal()
   open_panel_terminal(next_id)
 end
 
--- Taste im Terminal-Modus: im Panel-Terminal die Aktion ausführen, sonst normal durchreichen
-local function terminal_key(key, fn)
-  return function()
-    local info = vim.b.snacks_terminal
-    if info and info.cmd == nil then
-      vim.schedule(fn)
-      return ""
-    end
-    return key
-  end
-end
-
 return {
   "folke/snacks.nvim",
   keys = {
-    { "<C-t>", toggle_panel, desc = "Toggle Terminal Panel" },
-    { "<leader>tn", new_terminal, desc = "New Terminal" },
-    { "<C-t>", terminal_key("<C-t>", toggle_panel), mode = "t", expr = true, desc = "Toggle Terminal Panel" },
-    { "<A-n>", terminal_key("<A-n>", new_terminal), mode = "t", expr = true, desc = "New Terminal" },
+    {
+      "<C-t>",
+      function()
+        toggle_panel()
+      end,
+      desc = "Toggle Terminal Panel",
+    },
+    {
+      "<leader>tn",
+      function()
+        new_terminal()
+      end,
+      desc = "New Terminal",
+    },
   },
   opts = {
     lazygit = is_windows and {
@@ -137,6 +163,9 @@ return {
           hidden = true,
           ignored = true,
           actions = {
+            toggle_terminal_panel = function()
+              toggle_panel()
+            end,
             reveal_in_explorer = function(_, item)
               if item then
                 local path = item.file:gsub("/", "\\")
@@ -148,6 +177,7 @@ return {
             list = {
               keys = {
                 ["R"] = "reveal_in_explorer",
+                ["<c-t>"] = "toggle_terminal_panel",
               },
             },
           },
