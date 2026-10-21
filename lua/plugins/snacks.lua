@@ -41,9 +41,34 @@ local function nvim_remote(target, line)
   return nv .. "--remote " .. target .. " && " .. nv .. '--remote-send "' .. keys .. '"'
 end
 
--- Alle Terminals im unteren Panel ein-/ausblenden, beim ersten Aufruf eins erstellen
+local panel_height = 0.3
+
+-- Panel-Terminals sind Snacks-Terminals ohne eigenen Befehl (lazygit & Co. bleiben aussen vor)
+local function panel_terms()
+  return vim.tbl_filter(function(t)
+    local info = vim.b[t.buf].snacks_terminal
+    return info ~= nil and info.cmd == nil
+  end, Snacks.terminal.list())
+end
+
+local function fix_height()
+  vim.schedule(function()
+    for _, t in ipairs(panel_terms()) do
+      if t:win_valid() then
+        vim.api.nvim_win_set_height(t.win, math.floor(vim.o.lines * panel_height))
+      end
+    end
+  end)
+end
+
+local function open_panel_terminal(count)
+  Snacks.terminal.open(nil, { cwd = LazyVim.root(), count = count, win = { position = "bottom" } })
+  fix_height()
+end
+
+-- Alle Panel-Terminals ein-/ausblenden, beim ersten Aufruf eins erstellen
 local function toggle_panel()
-  local terms = Snacks.terminal.list()
+  local terms = panel_terms()
   local visible = vim.tbl_filter(function(t)
     return t:win_valid()
   end, terms)
@@ -55,25 +80,37 @@ local function toggle_panel()
     for _, t in ipairs(terms) do
       t:show()
     end
+    fix_height()
   else
-    Snacks.terminal.open(nil, { cwd = LazyVim.root(), count = 1 })
+    open_panel_terminal(1)
   end
 end
 
 -- Weiteres Terminal neben den bestehenden im Panel öffnen
 local function new_terminal()
-  local terms = Snacks.terminal.list()
   local next_id = 1
-  for _, t in ipairs(terms) do
+  for _, t in ipairs(panel_terms()) do
     if not t:win_valid() then
       t:show()
     end
-    local info = vim.b[t.buf].snacks_terminal
-    if info and info.id >= next_id then
-      next_id = info.id + 1
+    local id = vim.b[t.buf].snacks_terminal.id
+    if id >= next_id then
+      next_id = id + 1
     end
   end
-  Snacks.terminal.open(nil, { cwd = LazyVim.root(), count = next_id })
+  open_panel_terminal(next_id)
+end
+
+-- Taste im Terminal-Modus: im Panel-Terminal die Aktion ausführen, sonst normal durchreichen
+local function terminal_key(key, fn)
+  return function()
+    local info = vim.b.snacks_terminal
+    if info and info.cmd == nil then
+      vim.schedule(fn)
+      return ""
+    end
+    return key
+  end
 end
 
 return {
@@ -81,6 +118,8 @@ return {
   keys = {
     { "<C-t>", toggle_panel, desc = "Toggle Terminal Panel" },
     { "<leader>tn", new_terminal, desc = "New Terminal" },
+    { "<C-t>", terminal_key("<C-t>", toggle_panel), mode = "t", expr = true, desc = "Toggle Terminal Panel" },
+    { "<A-n>", terminal_key("<A-n>", new_terminal), mode = "t", expr = true, desc = "New Terminal" },
   },
   opts = {
     lazygit = is_windows and {
@@ -130,16 +169,6 @@ return {
           hidden = true,
           ignored = false,
           exclude = exclude,
-        },
-      },
-    },
-    terminal = {
-      win = {
-        position = "bottom",
-        height = 0.3,
-        keys = {
-          toggle_panel = { "<C-t>", toggle_panel, mode = { "n", "t" }, desc = "Toggle Terminal Panel" },
-          new_terminal = { "<A-n>", new_terminal, mode = { "n", "t" }, desc = "New Terminal" },
         },
       },
     },
