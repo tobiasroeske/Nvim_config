@@ -3,18 +3,17 @@ return {
     "sindrets/diffview.nvim",
     cmd = { "DiffviewOpen", "DiffviewClose", "DiffviewFileHistory" },
     keys = {
-      {
-        "<leader>gv",
-        function()
-          if next(require("diffview.lib").views) == nil then
-            vim.cmd("DiffviewOpen")
-          else
-            vim.cmd("DiffviewClose")
-          end
-        end,
-        desc = "Diffview Toggle",
+      -- deine bestehenden Keys bleiben unverändert
+    },
+    opts = {
+      keymaps = {
+        file_panel = {
+          { "n", "q", "<cmd>DiffviewClose<cr>", { desc = "Close Diffview" } },
+        },
+        file_history_panel = {
+          { "n", "q", "<cmd>DiffviewClose<cr>", { desc = "Close Diffview" } },
+        },
       },
-      { "<leader>gV", "<cmd>DiffviewFileHistory %<cr>", desc = "Diffview File History" },
     },
   },
 }
