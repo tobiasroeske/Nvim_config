@@ -367,7 +367,7 @@ local function selection_snippet()
   return out
 end
 
-local function open_float(path)
+local function open_float(path, title, on_close)
   local buf = vim.fn.bufadd(path)
   vim.fn.bufload(buf)
   vim.bo[buf].buflisted = true
@@ -378,7 +378,7 @@ local function open_float(path)
     width = 0.6,
     height = 0.6,
     border = "rounded",
-    title = " 󰠮 " .. vim.fn.fnamemodify(path, ":t:r") .. " ",
+    title = " 󰠮 " .. (title or vim.fn.fnamemodify(path, ":t:r")) .. " ",
     footer_keys = { "q", "<A-o>" },
     enter = true,
     wo = { wrap = true, linebreak = true },
@@ -392,7 +392,10 @@ local function open_float(path)
         desc = "Als Buffer öffnen",
       },
     },
-    on_close = function()
+    on_close = function(self)
+      if on_close then
+        on_close(self)
+      end
       if vim.api.nvim_buf_is_valid(buf) then
         vim.api.nvim_buf_call(buf, function()
           vim.cmd("silent! update")
@@ -402,22 +405,86 @@ local function open_float(path)
   })
 end
 
--- New note with the default note template in a floating window, works from any buffer
+-- Active quick note: stays active (also across restarts) until it is finished
+local quick = {
+  state = vim.fn.stdpath("state") .. "/obsidian-quicknote",
+  path = nil, ---@type string?
+  win = nil, ---@type snacks.win?
+  cursor = nil, ---@type integer[]?
+}
+quick.path = vim.uv.fs_stat(quick.state) and vim.fn.readfile(quick.state)[1] or nil
+
+local function quick_active()
+  if quick.path and not vim.uv.fs_stat(quick.path) then
+    quick.path, quick.cursor = nil, nil
+    os.remove(quick.state)
+  end
+  return quick.path
+end
+
+local function quick_show(snippet)
+  if not (quick.win and quick.win:valid()) then
+    local name = vim.fn.fnamemodify(quick.path, ":t:r")
+    local origin = vim.api.nvim_get_current_win()
+    quick.win = open_float(quick.path, "Quick Note: " .. name, function(self)
+      quick.cursor = vim.api.nvim_win_get_cursor(self.win)
+      if vim.api.nvim_get_current_win() == self.win and vim.api.nvim_win_is_valid(origin) then
+        vim.api.nvim_set_current_win(origin)
+      end
+    end)
+  end
+  quick.win:focus()
+  local buf = quick.win.buf --[[@as integer]]
+  local win = quick.win.win --[[@as integer]]
+  if snippet then
+    vim.api.nvim_buf_set_lines(buf, -1, -1, false, snippet)
+    vim.api.nvim_win_set_cursor(win, { vim.api.nvim_buf_line_count(buf), 0 })
+  elseif quick.cursor then
+    pcall(vim.api.nvim_win_set_cursor, win, quick.cursor)
+  else
+    vim.api.nvim_win_set_cursor(win, { vim.api.nvim_buf_line_count(buf), 0 })
+  end
+end
+
+-- Toggle the active quick note in a floating window (works from any buffer), new one if none is active
 -- In visual mode the selection is appended as code block with file:line reference
 local function quick_note()
   local snippet = selection_snippet()
-  vim.ui.input({ prompt = "Notiz-Titel (optional): " }, function(title)
+  if not snippet and quick.win and quick.win:valid() then
+    if vim.api.nvim_get_current_win() == quick.win.win then
+      quick.win:hide()
+    else
+      quick.win:focus()
+    end
+    return
+  end
+  if quick_active() then
+    return quick_show(snippet)
+  end
+  vim.ui.input({ prompt = "Neue Quick Note – Titel (optional): " }, function(title)
     if title == nil then
       return
     end
     local note = require("obsidian.note").create({ id = title, template = Obsidian.opts.note.template })
     note:write()
-    local win = open_float(tostring(note.path))
-    if snippet then
-      vim.api.nvim_buf_set_lines(win.buf, -1, -1, false, snippet)
-    end
-    vim.api.nvim_win_set_cursor(win.win, { vim.api.nvim_buf_line_count(win.buf), 0 })
+    quick.path, quick.cursor = tostring(note.path), nil
+    vim.fn.writefile({ quick.path }, quick.state)
+    quick_show(snippet)
   end)
+end
+
+-- Finish the active quick note; the next <leader>Oq starts a new one
+local function quick_finish()
+  if not quick_active() then
+    return vim.notify("Keine aktive Quick Note", vim.log.levels.WARN)
+  end
+  if quick.win and quick.win:valid() then
+    quick.win:close()
+  end
+  local name = vim.fn.fnamemodify(quick.path, ":t:r")
+  quick.path, quick.cursor, quick.win = nil, nil, nil
+  os.remove(quick.state)
+  vim.notify("Quick Note abgeschlossen: " .. name)
 end
 
 -- Append lines to a note; an open buffer of it is edited directly
@@ -454,6 +521,9 @@ local function append_selection()
         return
       end
       local path = Snacks.picker.util.path(item)
+      if not path then
+        return
+      end
       append_to_note_file(path, snippet)
       vim.notify("Angehängt an " .. vim.fn.fnamemodify(path, ":t:r"))
     end,
@@ -506,7 +576,8 @@ return {
     end,
     keys = {
       { "<leader>Oj", new_journal_entry, desc = "New Journal Entry" },
-      { "<leader>Oq", quick_note, mode = { "n", "x" }, desc = "Quick Note (Float)" },
+      { "<leader>Oq", quick_note, mode = { "n", "x" }, desc = "Quick Note (Toggle)" },
+      { "<leader>OQ", quick_finish, desc = "Quick Note abschliessen" },
       { "<leader>On", new_from_templates, desc = "New Note from Template(s)" },
       { "<leader>OT", insert_templates, desc = "Insert Template(s)" },
       { "<leader>Or", "<cmd>Obsidian rename<cr>", desc = "Rename Note" },
@@ -601,6 +672,23 @@ return {
     "folke/snacks.nvim",
     opts = function()
       patch_explorer_sort()
+    end,
+  },
+  {
+    "nvim-lualine/lualine.nvim",
+    optional = true,
+    opts = function(_, opts)
+      table.insert(opts.sections.lualine_x, 1, {
+        function()
+          return "󰠮 " .. vim.fn.fnamemodify(quick.path, ":t:r")
+        end,
+        cond = function()
+          return quick.path ~= nil
+        end,
+        color = function()
+          return { fg = Snacks.util.color("Special") }
+        end,
+      })
     end,
   },
   {

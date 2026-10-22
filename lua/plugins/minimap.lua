@@ -20,6 +20,10 @@ return {
       y_multiplier = 2,
       click = { enabled = true },
       search = { enabled = true },
+      -- Git hunks (gitsigns) as highlighted minimap lines: add / change / delete
+      git = { enabled = true, mode = "line" },
+      -- Diagnostics as signs, so they don't cover the git line highlights
+      diagnostic = { mode = "sign" },
     }
   end,
 }
