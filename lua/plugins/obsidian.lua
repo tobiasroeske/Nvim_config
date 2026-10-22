@@ -3,19 +3,34 @@ local vault = vim.fs.normalize(vim.env.OBSIDIAN_VAULT or "~/Obsidian/Tobis Vault
 local has_vault = vim.fn.isdirectory(vault) == 1
 local is_windows = vim.fn.has("win32") == 1
 
+-- Vault paths that are not notes (obsidian.nvim ignore_filters and picker excludes)
+local ignored = { "_Anleitungen/", "Attachments/", "claude", ".claude" }
+
+-- Vault path and its resolved target (symlink/junction/OneDrive), both lowercased on Windows
+local vault_roots = {}
+for _, v in ipairs({ vault, has_vault and vim.uv.fs_realpath(vault) or nil }) do
+  v = vim.fs.normalize(v)
+  vault_roots[#vault_roots + 1] = is_windows and v:lower() or v
+end
+
 local function in_vault(path)
   if not has_vault or path == "" then
     return false
   end
-  local p, v = vim.fs.normalize(path), vault
-  if is_windows then
-    p, v = p:lower(), v:lower()
+  local p = vim.fs.normalize(path)
+  p = is_windows and p:lower() or p
+  for _, v in ipairs(vault_roots) do
+    if vim.startswith(p, v .. "/") then
+      return true
+    end
   end
-  return vim.startswith(p, v .. "/")
+  return false
 end
 
+---@param title string|?
+---@return string
 local function timestamp_id(title)
-  local prefix = os.date("%Y-%m-%d %H%M")
+  local prefix = os.date("%Y-%m-%d %H%M") --[[@as string]]
   if title ~= nil and title ~= "" then
     return prefix .. " " .. title
   end
@@ -39,16 +54,27 @@ local function daily_neighbor(date, direction)
 end
 
 -- Point the neighbor's `key` property at the new daily note
+-- An open buffer of the neighbor is edited directly so it never goes stale against the file
 local function set_daily_property(neighbor, key, date)
   local path = vault .. "/Daily/" .. neighbor .. ".md"
-  local lines = vim.fn.readfile(path)
+  local buf = vim.fn.bufnr(path)
+  local loaded = buf ~= -1 and vim.api.nvim_buf_is_loaded(buf)
+  local lines = loaded and vim.api.nvim_buf_get_lines(buf, 0, -1, false) or vim.fn.readfile(path)
   for i, line in ipairs(lines) do
     if i > 1 and line == "---" then
       break
     end
     if line:match("^" .. key .. ":") then
-      lines[i] = string.format('%s: "[[%s]]"', key, date)
-      vim.fn.writefile(lines, path)
+      local new = string.format('%s: "[[%s]]"', key, date)
+      if loaded then
+        vim.api.nvim_buf_set_lines(buf, i - 1, i, false, { new })
+        vim.api.nvim_buf_call(buf, function()
+          vim.cmd("silent! update")
+        end)
+      else
+        lines[i] = new
+        vim.fn.writefile(lines, path)
+      end
       return
     end
   end
@@ -79,26 +105,45 @@ local function birthtime(node)
   return node.birthtime
 end
 
--- Snacks explorer: inside the vault, folders first, then notes by creation date (newest first)
+-- Directories inside an Obsidian vault (any folder with a `.obsidian` folder above it)
+local vault_dirs = {}
+local function is_vault_dir(path)
+  if path == "" then
+    return false
+  end
+  if vault_dirs[path] == nil then
+    vault_dirs[path] = vim.fs.root(path, ".obsidian") ~= nil
+  end
+  return vault_dirs[path]
+end
+
+-- Snacks explorer inside a vault, like Obsidian's "Created time (new to old)":
+-- folders on top (A-Z, case-insensitive), then notes by creation date (newest first),
+-- dot entries (.obsidian, .trash, ...) hidden
 local function patch_explorer_sort()
   local tree = require("snacks.explorer.tree")
-  local default_walk = tree.walk
+  if rawget(tree, "walk") then
+    return
+  end
+  local default_walk = getmetatable(tree).walk
 
   function tree:walk(node, fn, opts)
-    if not in_vault(node.path .. "/_") then
+    if not is_vault_dir(node.path) then
       return default_walk(self, node, fn, opts)
     end
     local abort = fn(node)
     if abort ~= nil then
       return abort
     end
-    local children = vim.tbl_values(node.children)
+    local children = vim.tbl_filter(function(child)
+      return child.name:sub(1, 1) ~= "."
+    end, vim.tbl_values(node.children))
     table.sort(children, function(a, b)
       if a.dir ~= b.dir then
         return a.dir
       end
       if a.dir then
-        return a.name < b.name
+        return a.name:lower() < b.name:lower()
       end
       local ta, tb = birthtime(a), birthtime(b)
       if ta ~= tb then
@@ -119,6 +164,300 @@ local function patch_explorer_sort()
     end
     return false
   end
+end
+
+-- Templates -----------------------------------------------------------------
+
+-- Split lines into frontmatter (without the `---` fences) and body
+local function split_frontmatter(lines)
+  if lines[1] == "---" then
+    for i = 2, #lines do
+      if lines[i] == "---" then
+        return vim.list_slice(lines, 2, i - 1), vim.list_slice(lines, i + 1)
+      end
+    end
+  end
+  return nil, lines
+end
+
+-- Frontmatter as ordered key blocks: { key = "tags", lines = { "tags:", "  - a" } }
+local function parse_frontmatter(fm)
+  local blocks, by_key = {}, {}
+  for _, line in ipairs(fm or {}) do
+    local key = line:match("^([^%s#%-][^:]*):")
+    if key then
+      local block = { key = key, lines = { line } }
+      table.insert(blocks, block)
+      by_key[key] = block
+    elseif #blocks > 0 then
+      table.insert(blocks[#blocks].lines, line)
+    else
+      table.insert(blocks, { lines = { line } })
+    end
+  end
+  return blocks, by_key
+end
+
+local function list_items(block)
+  return vim.tbl_filter(function(line)
+    return line:match("^%s*%- ") ~= nil
+  end, vim.list_slice(block.lines, 2))
+end
+
+-- Text-level merge that keeps the existing formatting:
+-- new keys are appended, list items (tags, aliases, ...) are unioned, existing scalar values win
+local function merge_frontmatter(target, extra)
+  local blocks, by_key = parse_frontmatter(target)
+  for _, add in ipairs((parse_frontmatter(extra))) do
+    local cur = add.key and by_key[add.key]
+    if add.key and not cur then
+      table.insert(blocks, add)
+      by_key[add.key] = add
+    elseif cur then
+      local items = list_items(add)
+      if #items > 0 and cur.lines[1]:match(":%s*%[%s*%]%s*$") then
+        cur.lines[1] = cur.key .. ":"
+      end
+      if #items > 0 and cur.lines[1]:match(":%s*$") then
+        local have = {}
+        for _, l in ipairs(list_items(cur)) do
+          have[vim.trim(l)] = true
+        end
+        for _, l in ipairs(items) do
+          if not have[vim.trim(l)] then
+            table.insert(cur.lines, l)
+          end
+        end
+      end
+    end
+  end
+  local out = {}
+  for _, b in ipairs(blocks) do
+    vim.list_extend(out, b.lines)
+  end
+  return out
+end
+
+-- Template contents with obsidian.nvim substitutions applied ({{date}}, {{title}}, custom ones, prompts)
+local function render_template(name, buf)
+  local templates = require("obsidian.templates")
+  local dir = require("obsidian.api").templates_dir()
+  local path = templates.resolve_template(name, dir)
+  local win = vim.fn.bufwinid(buf)
+  local cursor = win ~= -1 and vim.api.nvim_win_get_cursor(win) or { 1, 0 }
+  local text = table.concat(
+    vim.tbl_map(function(l)
+      return (l:gsub("\r$", ""))
+    end, vim.fn.readfile(tostring(path))),
+    "\n"
+  )
+  text = templates.substitute_template_variables(text, {
+    type = "insert_template",
+    template_name = name,
+    templates_dir = dir,
+    location = { buf, win, cursor[1], cursor[2] },
+    partial_note = require("obsidian.note").from_buffer(buf),
+  })
+  return vim.split(text, "\n", { plain = true })
+end
+
+-- Apply templates to `buf`: frontmatter is merged, bodies go below `row` (nil = end of note)
+local function apply_templates(buf, names, row)
+  local fm, body = split_frontmatter(vim.api.nvim_buf_get_lines(buf, 0, -1, false))
+  local fm_len = fm and #fm + 2 or 0
+  local at = row and math.min(math.max(row - fm_len, 0), #body) or #body
+  local inserted = {}
+  for _, name in ipairs(names) do
+    local t_fm, t_body = split_frontmatter(render_template(name, buf))
+    if t_fm then
+      fm = merge_frontmatter(fm or {}, t_fm)
+    end
+    local has_body = vim.iter(t_body):any(function(l)
+      return vim.trim(l) ~= ""
+    end)
+    if has_body then
+      if t_body[1] ~= "" then
+        table.insert(inserted, "")
+      end
+      vim.list_extend(inserted, t_body)
+    end
+  end
+  local out = fm and vim.list_extend({ "---" }, fm) or {}
+  if fm then
+    table.insert(out, "---")
+  end
+  vim.list_extend(out, vim.list_slice(body, 1, at))
+  vim.list_extend(out, inserted)
+  vim.list_extend(out, vim.list_slice(body, at + 1))
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, out)
+end
+
+-- Template picker, <Tab> selects several (applied in selection order)
+local function pick_templates(title, callback)
+  local dir = require("obsidian.api").templates_dir()
+  if not dir then
+    return vim.notify("Kein Templates-Ordner gefunden", vim.log.levels.ERROR)
+  end
+  Snacks.picker.files({
+    title = title,
+    cwd = tostring(dir),
+    ft = "md",
+    confirm = function(picker)
+      local paths = vim.tbl_map(Snacks.picker.util.path, picker:selected({ fallback = true }))
+      picker:close()
+      if #paths > 0 then
+        vim.schedule(function()
+          callback(paths)
+        end)
+      end
+    end,
+  })
+end
+
+-- New note from one or more templates; the first one decides filename and location
+local function new_from_templates()
+  pick_templates("Neue Notiz aus Template(s)", function(paths)
+    vim.ui.input({ prompt = "Titel (optional): " }, function(title)
+      if title == nil then
+        return
+      end
+      require("obsidian.actions").new_from_template(title, paths[1], function(note)
+        note:open({ sync = true })
+        if #paths > 1 then
+          apply_templates(vim.api.nvim_get_current_buf(), vim.list_slice(paths, 2))
+          vim.cmd("silent! update")
+        end
+      end)
+    end)
+  end)
+end
+
+-- Insert one or more templates below the cursor of the current note
+local function insert_templates()
+  local buf = vim.api.nvim_get_current_buf()
+  if not in_vault(vim.api.nvim_buf_get_name(buf)) then
+    return vim.notify("Aktueller Buffer ist keine Vault-Notiz", vim.log.levels.WARN)
+  end
+  local row = vim.api.nvim_win_get_cursor(0)[1]
+  pick_templates("Template(s) einfügen", function(paths)
+    apply_templates(buf, paths, row)
+  end)
+end
+
+-- Quick capture ---------------------------------------------------------------
+
+-- Visual selection as fenced code block with its source location (markdown stays plain text)
+local function selection_snippet()
+  local mode = vim.fn.mode()
+  if not mode:match("[vV\22]") then
+    return nil
+  end
+  local s, e = vim.fn.getpos("v"), vim.fn.getpos(".")
+  local lines = vim.fn.getregion(s, e, { type = mode })
+  local first, last = math.min(s[2], e[2]), math.max(s[2], e[2])
+  vim.api.nvim_feedkeys(vim.keycode("<Esc>"), "nx", false)
+  if vim.bo.filetype == "markdown" then
+    return vim.list_extend({ "" }, lines)
+  end
+  local file = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(0), ":~:.")
+  local loc = first == last and ("%s:%d"):format(file, first) or ("%s:%d-%d"):format(file, first, last)
+  local out = { "", "`" .. loc .. "`", "```" .. vim.bo.filetype }
+  vim.list_extend(out, lines)
+  table.insert(out, "```")
+  return out
+end
+
+local function open_float(path)
+  local buf = vim.fn.bufadd(path)
+  vim.fn.bufload(buf)
+  vim.bo[buf].buflisted = true
+  return Snacks.win({
+    buf = buf,
+    ft = "markdown",
+    position = "float",
+    width = 0.6,
+    height = 0.6,
+    border = "rounded",
+    title = " 󰠮 " .. vim.fn.fnamemodify(path, ":t:r") .. " ",
+    footer_keys = { "q", "<A-o>" },
+    enter = true,
+    wo = { wrap = true, linebreak = true },
+    keys = {
+      expand = {
+        "<A-o>",
+        function(self)
+          self:close()
+          vim.cmd.edit(vim.fn.fnameescape(path))
+        end,
+        desc = "Als Buffer öffnen",
+      },
+    },
+    on_close = function()
+      if vim.api.nvim_buf_is_valid(buf) then
+        vim.api.nvim_buf_call(buf, function()
+          vim.cmd("silent! update")
+        end)
+      end
+    end,
+  })
+end
+
+-- New note with the default note template in a floating window, works from any buffer
+-- In visual mode the selection is appended as code block with file:line reference
+local function quick_note()
+  local snippet = selection_snippet()
+  vim.ui.input({ prompt = "Notiz-Titel (optional): " }, function(title)
+    if title == nil then
+      return
+    end
+    local note = require("obsidian.note").create({ id = title, template = Obsidian.opts.note.template })
+    note:write()
+    local win = open_float(tostring(note.path))
+    if snippet then
+      vim.api.nvim_buf_set_lines(win.buf, -1, -1, false, snippet)
+    end
+    vim.api.nvim_win_set_cursor(win.win, { vim.api.nvim_buf_line_count(win.buf), 0 })
+  end)
+end
+
+-- Append lines to a note; an open buffer of it is edited directly
+local function append_to_note_file(path, lines)
+  local buf = vim.fn.bufnr(path)
+  if buf ~= -1 and vim.api.nvim_buf_is_loaded(buf) then
+    vim.api.nvim_buf_set_lines(buf, -1, -1, false, lines)
+    vim.api.nvim_buf_call(buf, function()
+      vim.cmd("silent! update")
+    end)
+  else
+    vim.fn.writefile(vim.list_extend(vim.fn.readfile(path), lines), path)
+  end
+end
+
+-- Append the visual selection to the end of an existing note, picked from the vault
+local function append_selection()
+  local snippet = selection_snippet()
+  if not snippet then
+    return
+  end
+  local exclude = { "Templates", ".obsidian" }
+  for _, f in ipairs(ignored) do
+    exclude[#exclude + 1] = (f:gsub("/$", ""))
+  end
+  Snacks.picker.files({
+    title = "An Notiz anhängen",
+    cwd = vault,
+    ft = "md",
+    exclude = exclude,
+    confirm = function(picker, item)
+      picker:close()
+      if not item then
+        return
+      end
+      local path = Snacks.picker.util.path(item)
+      append_to_note_file(path, snippet)
+      vim.notify("Angehängt an " .. vim.fn.fnamemodify(path, ":t:r"))
+    end,
+  })
 end
 
 local function new_journal_entry()
@@ -164,15 +503,15 @@ return {
           end)
         end,
       })
-      vim.api.nvim_create_autocmd("User", {
-        pattern = "VeryLazy",
-        once = true,
-        callback = patch_explorer_sort,
-      })
     end,
     keys = {
       { "<leader>Oj", new_journal_entry, desc = "New Journal Entry" },
-      { "<leader>On", "<cmd>Obsidian new_from_template<cr>", desc = "New Note (pick Template)" },
+      { "<leader>Oq", quick_note, mode = { "n", "x" }, desc = "Quick Note (Float)" },
+      { "<leader>On", new_from_templates, desc = "New Note from Template(s)" },
+      { "<leader>OT", insert_templates, desc = "Insert Template(s)" },
+      { "<leader>Or", "<cmd>Obsidian rename<cr>", desc = "Rename Note" },
+      { "<leader>Oe", append_selection, mode = "x", desc = "Append Selection to Note" },
+      { "<leader>Oc", "<cmd>Obsidian toc<cr>", desc = "Table of Contents" },
       { "<leader>Ot", "<cmd>Obsidian today<cr>", desc = "Today" },
       { "<leader>Oy", "<cmd>Obsidian yesterday<cr>", desc = "Yesterday" },
       { "<leader>Od", "<cmd>Obsidian dailies<cr>", desc = "Dailies" },
@@ -207,6 +546,8 @@ return {
 
       templates = {
         folder = "Templates",
+        date_format = "YYYY-MM-DD",
+        time_format = "HH:mm",
         substitutions = {
           vorher = daily_link("prev", "nachher"),
           nachher = daily_link("next", "vorher"),
@@ -224,7 +565,7 @@ return {
       },
       attachments = { folder = "Attachments" },
       file = {
-        ignore_filters = { "_Anleitungen/", "Attachments/", "claude", ".claude" },
+        ignore_filters = ignored,
       },
       picker = { name = "snacks.picker" },
     },
@@ -255,6 +596,12 @@ return {
         },
       },
     },
+  },
+  {
+    "folke/snacks.nvim",
+    opts = function()
+      patch_explorer_sort()
+    end,
   },
   {
     "folke/which-key.nvim",
