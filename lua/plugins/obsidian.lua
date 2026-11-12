@@ -4,7 +4,10 @@ local has_vault = vim.fn.isdirectory(vault) == 1
 local is_windows = vim.fn.has("win32") == 1
 
 -- Vault paths that are not notes (obsidian.nvim ignore_filters and picker excludes)
-local ignored = { "_Anleitungen/", "Attachments/", "claude", ".claude" }
+local ignored = { "Archiv/", "Attachments/", "claude", ".claude" }
+
+-- Daily notes folder (relative to the vault)
+local daily_folder = "4-Daily"
 
 -- Vault path and its resolved target (symlink/junction/OneDrive), both lowercased on Windows
 local vault_roots = {}
@@ -40,7 +43,7 @@ end
 -- Nearest existing daily note before or after `date` (YYYY-MM-DD), mirroring the Templater logic
 local function daily_neighbor(date, direction)
   local best
-  for name, type in vim.fs.dir(vault .. "/Daily") do
+  for name, type in vim.fs.dir(vault .. "/" .. daily_folder) do
     local d = type == "file" and name:match("^(%d%d%d%d%-%d%d%-%d%d)%.md$")
     if d and d ~= date then
       if direction == "prev" and d < date and (not best or d > best) then
@@ -56,7 +59,7 @@ end
 -- Point the neighbor's `key` property at the new daily note
 -- An open buffer of the neighbor is edited directly so it never goes stale against the file
 local function set_daily_property(neighbor, key, date)
-  local path = vault .. "/Daily/" .. neighbor .. ".md"
+  local path = vault .. "/" .. daily_folder .. "/" .. neighbor .. ".md"
   local buf = vim.fn.bufnr(path)
   local loaded = buf ~= -1 and vim.api.nvim_buf_is_loaded(buf)
   local lines = loaded and vim.api.nvim_buf_get_lines(buf, 0, -1, false) or vim.fn.readfile(path)
@@ -530,14 +533,29 @@ local function append_selection()
   })
 end
 
+-- Open today's daily note with the cursor in the "## Journal" section
 local function new_journal_entry()
-  vim.ui.input({ prompt = "Tagebuch-Titel (optional): " }, function(title)
-    if title == nil then
-      return
+  vim.cmd("Obsidian today")
+  vim.schedule(function()
+    local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
+    for i, line in ipairs(lines) do
+      if line == "## Journal" then
+        local last = i
+        while lines[last + 1] and not lines[last + 1]:match("^#") do
+          last = last + 1
+        end
+        while last > i and lines[last]:match("^%s*$") do
+          last = last - 1
+        end
+        if last == i then
+          vim.api.nvim_buf_set_lines(0, i, i, false, { "" })
+          last = i + 1
+        end
+        vim.api.nvim_win_set_cursor(0, { last, 0 })
+        vim.cmd("normal! zz")
+        return
+      end
     end
-    require("obsidian.actions").new_from_template(title, "Tagebuch Template", function(note)
-      note:open({ sync = true })
-    end)
   end)
 end
 
@@ -602,7 +620,8 @@ return {
         { name = "Tobis Vault", path = vault },
       },
 
-      -- Notes land in the vault root; the title is the filename, no title gives a timestamp
+      -- Notes land in the inbox; the title is the filename, no title gives a timestamp
+      notes_subdir = "0-Inbox",
       new_notes_location = "notes_subdir",
       note_id_func = function(title)
         if title ~= nil and title ~= "" then
@@ -610,7 +629,7 @@ return {
         end
         return timestamp_id()
       end,
-      note = { template = "Notiz Template.md" },
+      note = { template = "Fleeting Template.md" },
 
       -- Leave frontmatter untouched; templates provide it
       frontmatter = { enabled = false },
@@ -623,13 +642,9 @@ return {
           vorher = daily_link("prev", "nachher"),
           nachher = daily_link("next", "vorher"),
         },
-        customizations = {
-          -- Journal entries get the "YYYY-MM-DD HHmm" prefix
-          ["Tagebuch Template"] = { note_id_func = timestamp_id },
-        },
       },
       daily_notes = {
-        folder = "Daily",
+        folder = daily_folder,
         date_format = "YYYY-MM-DD",
         workdays_only = false,
         template = vim.fn.stdpath("config") .. "/templates/obsidian/daily.md",
