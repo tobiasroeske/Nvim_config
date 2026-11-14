@@ -350,7 +350,9 @@ end
 -- Quick capture ---------------------------------------------------------------
 
 -- Visual selection as fenced code block with its source location (markdown stays plain text)
-local function selection_snippet()
+-- `full_path` gives the location as ~/path instead of relative to the working directory
+---@param full_path? boolean
+local function selection_snippet(full_path)
   local mode = vim.fn.mode()
   if not mode:match("[vV\22]") then
     return nil
@@ -362,7 +364,7 @@ local function selection_snippet()
   if vim.bo.filetype == "markdown" then
     return vim.list_extend({ "" }, lines)
   end
-  local file = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(0), ":~:.")
+  local file = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(0), full_path and ":~" or ":~:.")
   local loc = first == last and ("%s:%d"):format(file, first) or ("%s:%d-%d"):format(file, first, last)
   local out = { "", "`" .. loc .. "`", "```" .. vim.bo.filetype }
   vim.list_extend(out, lines)
@@ -559,6 +561,13 @@ local function new_journal_entry()
   end)
 end
 
+-- TaskNotes module bound to this vault
+local function tasknotes()
+  local t = require("tasknotes")
+  t.setup({ vault = vault })
+  return t
+end
+
 return {
   {
     "obsidian-nvim/obsidian.nvim",
@@ -611,6 +620,35 @@ return {
       { "<leader>Og", "<cmd>Obsidian tags<cr>", desc = "Tags" },
       { "<leader>Oo", "<cmd>Obsidian open<cr>", desc = "Open in Obsidian App" },
       { "<leader>Op", "<cmd>Obsidian paste_img<cr>", desc = "Paste Image" },
+      {
+        "<leader>Ox",
+        function()
+          tasknotes().open(1)
+        end,
+        desc = "Aufgaben (Heute)",
+      },
+      {
+        "<leader>Om",
+        function()
+          tasknotes().open(2)
+        end,
+        desc = "Aufgaben (Morgen)",
+      },
+      {
+        "<leader>Oa",
+        function()
+          tasknotes().new({ body = selection_snippet(true) })
+        end,
+        mode = { "n", "x" },
+        desc = "Neue Aufgabe (mit Auswahl)",
+      },
+      {
+        "<leader>OP",
+        function()
+          tasknotes().open_project()
+        end,
+        desc = "Projekt-Aufgaben",
+      },
     },
     ---@module 'obsidian'
     ---@type obsidian.config
