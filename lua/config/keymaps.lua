@@ -25,3 +25,17 @@ vim.keymap.set("n", "<leader>fX", function()
     vim.cmd("!open " .. vim.fn.shellescape(dir))
   end
 end, { desc = "Ordner der aktuellen Datei im Windows Explorer öffnen" })
+
+-- Paste the system clipboard with Ctrl v in insert and command-line mode (Ctrl q still inserts a literal key)
+local function paste_clipboard()
+  local lines = vim.fn.getreg("+", 1, true)
+  if vim.fn.getregtype("+") == "V" then
+    table.insert(lines, "")
+  end
+  vim.paste(lines, -1)
+end
+vim.keymap.set({ "i", "c" }, "<C-v>", paste_clipboard, { desc = "Paste from clipboard" })
+
+-- Changing text (c, C) does not overwrite the clipboard, so ciw + Ctrl v replaces a word with it
+vim.keymap.set({ "n", "x" }, "c", '"_c', { desc = "Change without yanking" })
+vim.keymap.set({ "n", "x" }, "C", '"_C', { desc = "Change to end of line without yanking" })
