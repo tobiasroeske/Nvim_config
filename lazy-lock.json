@@ -2,7 +2,7 @@
   "LazyVim": { "branch": "main", "commit": "0fa4a847929fc6beae40a3063615a58115678c34" },
   "SchemaStore.nvim": { "branch": "main", "commit": "13a365fa7a893891fe8724390ad7e608d1c1c59b" },
   "auto-save.nvim": { "branch": "main", "commit": "141e5b4cb5df51e659fc039e25d227360f4dffcd" },
-  "backend-zellij-lua": { "branch": "master", "commit": "4e3e588795efb95548dd2ebeaf385a7823821ceb" },
+  "backend-wezterm": { "branch": "master", "commit": "ae840db696791f638c190c3e0534d2ddfcd5e6a7" },
   "blink.cmp": { "branch": "main", "commit": "78336bc89ee5365633bcf754d93df01678b5c08f" },
   "bufferline.nvim": { "branch": "main", "commit": "655133c3b4c3e5e05ec549b9f8cc2894ac6f51b3" },
   "catppuccin": { "branch": "main", "commit": "edefef779ab08ce1a4a404713e3012b0d202bd35" },

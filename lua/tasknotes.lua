@@ -905,7 +905,7 @@ for i in ipairs(global_views) do
 end
 
 -- Actions with their key in the list (plain letter) and in the search input (Alt + letter).
--- Alt n/f are left out because Zellij uses them.
+-- Alt n/f are left out because WezTerm uses them.
 local key_actions = {
   { "x", "task_done", "Erledigt / wieder öffnen" },
   { "s", "task_status", "Status" },
