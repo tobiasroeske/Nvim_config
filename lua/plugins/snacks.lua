@@ -41,15 +41,39 @@ local function nvim_remote(target, line)
   return nv .. "--remote " .. target .. " && " .. nv .. '--remote-send "' .. keys .. '"'
 end
 
-local toggle_panel, new_terminal
+local toggle_panel, new_terminal, toggle_float
 local editor_win
 
--- Panel-Terminals sind Snacks-Terminals ohne eigenen Befehl (lazygit & Co. bleiben aussen vor)
+-- Panel-Terminals sind Snacks-Terminals ohne eigenen Befehl (lazygit, Floating-Terminal & Co. bleiben aussen vor)
 local function panel_terms()
   return vim.tbl_filter(function(t)
     local info = vim.b[t.buf].snacks_terminal
-    return info ~= nil and info.cmd == nil
+    return info ~= nil and info.cmd == nil and not (info.env and info.env.NVIM_FLOAT_TERM)
   end, Snacks.terminal.list())
+end
+
+-- Floating-Terminal im Projekt-Root, Alt t blendet es ein/aus (auch aus dem Terminal heraus)
+function toggle_float()
+  Snacks.terminal.toggle(nil, {
+    cwd = LazyVim.root(),
+    env = { NVIM_FLOAT_TERM = "1" },
+    win = {
+      position = "float",
+      border = "rounded",
+      width = 0.85,
+      height = 0.85,
+      keys = {
+        toggle_float = {
+          "<A-t>",
+          function()
+            toggle_float()
+          end,
+          mode = { "n", "t" },
+          desc = "Toggle Floating Terminal",
+        },
+      },
+    },
+  })
 end
 
 -- Fenster merken, aus dem das Panel geöffnet wurde, damit der Fokus beim Schliessen dorthin zurückgeht
@@ -138,6 +162,34 @@ return {
         toggle_panel()
       end,
       desc = "Toggle Terminal Panel",
+    },
+    {
+      "<leader>ft",
+      function()
+        toggle_panel()
+      end,
+      desc = "Toggle Terminal Panel",
+    },
+    {
+      "<A-n>",
+      function()
+        new_terminal()
+      end,
+      desc = "New Terminal",
+    },
+    {
+      "<leader>tf",
+      function()
+        toggle_float()
+      end,
+      desc = "Toggle Floating Terminal",
+    },
+    {
+      "<A-t>",
+      function()
+        toggle_float()
+      end,
+      desc = "Toggle Floating Terminal",
     },
     {
       "<leader>tn",
