@@ -9,6 +9,17 @@ local ignored = { "Archiv/", "Attachments/", "claude", ".claude" }
 -- Daily notes folder (relative to the vault)
 local daily_folder = "4-Daily"
 
+-- Action requested by a Zed task (see zed_actions); nvim quits once the action is done
+local zed = vim.env.OBSIDIAN_ZED
+
+local function zed_quit()
+  vim.cmd("silent! wall")
+  -- Deferred so closing pickers and inputs finish before nvim exits
+  vim.defer_fn(function()
+    vim.cmd("qa")
+  end, 100)
+end
+
 -- Vault path and its resolved target (symlink/junction/OneDrive), both lowercased on Windows
 local vault_roots = {}
 for _, v in ipairs({ vault, has_vault and vim.uv.fs_realpath(vault) or nil }) do
@@ -349,10 +360,61 @@ end
 
 -- Quick capture ---------------------------------------------------------------
 
--- Visual selection as fenced code block with its source location (markdown stays plain text)
+-- Selected lines as fenced code block with their source location (markdown stays plain text)
 -- `full_path` gives the location as ~/path instead of relative to the working directory
+local function format_snippet(lines, file, ft, first, last, full_path)
+  if ft == "markdown" then
+    return vim.list_extend({ "" }, lines)
+  end
+  file = vim.fn.fnamemodify(file, full_path and ":~" or ":~:.")
+  local loc = first == last and ("%s:%d"):format(file, first) or ("%s:%d-%d"):format(file, first, last)
+  local out = { "", "`" .. loc .. "`", "```" .. ft }
+  vim.list_extend(out, lines)
+  table.insert(out, "```")
+  return out
+end
+
+-- Selection passed in by a Zed task ($ZED_SELECTED_TEXT); its first line is the match
+-- in $ZED_FILE closest to the cursor row $ZED_ROW
+---@param full_path? boolean
+local function zed_snippet(full_path)
+  local text = vim.env.ZED_SELECTED_TEXT
+  -- The selection is used once; later actions in the same nvim work without it
+  vim.env.ZED_SELECTED_TEXT = nil
+  if not text or vim.trim(text) == "" then
+    return nil
+  end
+  local lines = vim.split((text:gsub("\r\n", "\n"):gsub("\n$", "")), "\n", { plain = true })
+  local file = vim.env.ZED_FILE or ""
+  local ft = file ~= "" and vim.filetype.match({ filename = file }) or ""
+  local row = tonumber(vim.env.ZED_ROW) or 1
+  local first = math.max(1, row - #lines + 1)
+  local ok, content = pcall(vim.fn.readfile, file)
+  if ok then
+    local best
+    for s = 1, #content - #lines + 1 do
+      local match = true
+      for i, l in ipairs(lines) do
+        if not content[s + i - 1]:find(vim.trim(l), 1, true) then
+          match = false
+          break
+        end
+      end
+      if match and (not best or math.abs(s - row) < math.abs(best - row)) then
+        best = s
+      end
+    end
+    first = best or first
+  end
+  return format_snippet(lines, file, ft, first, first + #lines - 1, full_path)
+end
+
+-- Visual selection (or the selection passed in by Zed) as snippet for a note
 ---@param full_path? boolean
 local function selection_snippet(full_path)
+  if zed then
+    return zed_snippet(full_path)
+  end
   local mode = vim.fn.mode()
   if not mode:match("[vV\22]") then
     return nil
@@ -361,15 +423,7 @@ local function selection_snippet(full_path)
   local lines = vim.fn.getregion(s, e, { type = mode })
   local first, last = math.min(s[2], e[2]), math.max(s[2], e[2])
   vim.api.nvim_feedkeys(vim.keycode("<Esc>"), "nx", false)
-  if vim.bo.filetype == "markdown" then
-    return vim.list_extend({ "" }, lines)
-  end
-  local file = vim.fn.fnamemodify(vim.api.nvim_buf_get_name(0), full_path and ":~" or ":~:.")
-  local loc = first == last and ("%s:%d"):format(file, first) or ("%s:%d-%d"):format(file, first, last)
-  local out = { "", "`" .. loc .. "`", "```" .. vim.bo.filetype }
-  vim.list_extend(out, lines)
-  table.insert(out, "```")
-  return out
+  return format_snippet(lines, vim.api.nvim_buf_get_name(0), vim.bo.filetype, first, last, full_path)
 end
 
 local function open_float(path, title, on_close)
@@ -428,6 +482,14 @@ local function quick_active()
 end
 
 local function quick_show(snippet)
+  if zed then
+    vim.cmd.edit(vim.fn.fnameescape(quick.path))
+    if snippet then
+      vim.api.nvim_buf_set_lines(0, -1, -1, false, snippet)
+    end
+    vim.api.nvim_win_set_cursor(0, { vim.api.nvim_buf_line_count(0), 0 })
+    return
+  end
   if not (quick.win and quick.win:valid()) then
     local name = vim.fn.fnamemodify(quick.path, ":t:r")
     local origin = vim.api.nvim_get_current_win()
@@ -455,6 +517,12 @@ end
 -- In visual mode the selection is appended as code block with file:line reference
 local function quick_note()
   local snippet = selection_snippet()
+  -- In Zed the quick note fills the nvim tab; toggling it off closes the tab
+  if zed and not snippet and quick_active() then
+    if vim.fn.fnamemodify(vim.api.nvim_buf_get_name(0), ":p") == vim.fn.fnamemodify(quick.path, ":p") then
+      return zed_quit()
+    end
+  end
   if not snippet and quick.win and quick.win:valid() then
     if vim.api.nvim_get_current_win() == quick.win.win then
       quick.win:hide()
@@ -468,7 +536,7 @@ local function quick_note()
   end
   vim.ui.input({ prompt = "Neue Quick Note – Titel (optional): " }, function(title)
     if title == nil then
-      return
+      return zed and zed_quit()
     end
     local note = require("obsidian.note").create({ id = title, template = Obsidian.opts.note.template })
     note:write()
@@ -481,6 +549,9 @@ end
 -- Finish the active quick note; the next <leader>Oq starts a new one
 local function quick_finish()
   if not quick_active() then
+    if zed then
+      return zed_quit()
+    end
     return vim.notify("Keine aktive Quick Note", vim.log.levels.WARN)
   end
   if quick.win and quick.win:valid() then
@@ -489,6 +560,9 @@ local function quick_finish()
   local name = vim.fn.fnamemodify(quick.path, ":t:r")
   quick.path, quick.cursor, quick.win = nil, nil, nil
   os.remove(quick.state)
+  if zed then
+    return zed_quit()
+  end
   vim.notify("Quick Note abgeschlossen: " .. name)
 end
 
@@ -564,8 +638,41 @@ end
 -- TaskNotes module bound to this vault
 local function tasknotes()
   local t = require("tasknotes")
-  t.setup({ vault = vault })
+  t.setup({ vault = vault, zed = zed ~= nil })
   return t
+end
+
+-- Actions Zed tasks start via $OBSIDIAN_ZED (Zed's tasks.json in chezmoi)
+local zed_actions = {
+  quick = quick_note,
+  ["quick-finish"] = quick_finish,
+  ["task-new"] = function()
+    tasknotes().new({ body = selection_snippet(true) })
+  end,
+  ["tasks-today"] = function()
+    tasknotes().open(1)
+  end,
+  ["tasks-tomorrow"] = function()
+    tasknotes().open(2)
+  end,
+  ["tasks-project"] = function()
+    tasknotes().open_project()
+  end,
+}
+if zed and has_vault then
+  vim.api.nvim_create_autocmd("VimEnter", {
+    once = true,
+    callback = function()
+      vim.schedule(function()
+        local action = zed_actions[zed]
+        if action then
+          action()
+        else
+          vim.notify("Unbekannte Zed-Aktion: " .. zed, vim.log.levels.ERROR)
+        end
+      end)
+    end,
+  })
 end
 
 return {
