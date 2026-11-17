@@ -52,9 +52,29 @@ local function panel_terms()
   end, Snacks.terminal.list())
 end
 
+-- Das bestehende Floating-Terminal (unabhängig vom aktuellen Root)
+local function float_term()
+  for _, t in ipairs(Snacks.terminal.list()) do
+    local info = vim.b[t.buf].snacks_terminal
+    if info and info.env and info.env.NVIM_FLOAT_TERM then
+      return t
+    end
+  end
+end
+
 -- Floating-Terminal im Projekt-Root, Alt t blendet es ein/aus (auch aus dem Terminal heraus)
 function toggle_float()
-  Snacks.terminal.toggle(nil, {
+  local existing = float_term()
+  if existing then
+    if existing:win_valid() then
+      existing:hide()
+    else
+      existing:show()
+      existing:focus()
+    end
+    return
+  end
+  Snacks.terminal.open(nil, {
     cwd = LazyVim.root(),
     env = { NVIM_FLOAT_TERM = "1" },
     win = {
@@ -70,6 +90,14 @@ function toggle_float()
           end,
           mode = { "n", "t" },
           desc = "Toggle Floating Terminal",
+        },
+        hide_float = {
+          "<C-t>",
+          function()
+            toggle_float()
+          end,
+          mode = { "n", "t" },
+          desc = "Hide Floating Terminal",
         },
       },
     },
@@ -114,6 +142,12 @@ end
 
 -- Alle Panel-Terminals ein-/ausblenden, beim ersten Aufruf eins erstellen
 function toggle_panel()
+  -- Im Floating-Terminal blendet die Panel-Taste dieses aus
+  local float = float_term()
+  if float and float:win_valid() and float.win == vim.api.nvim_get_current_win() then
+    float:hide()
+    return
+  end
   local terms = panel_terms()
   local visible = vim.tbl_filter(function(t)
     return t:win_valid()
