@@ -4,17 +4,6 @@ local M = {}
 
 local vault ---@type string
 local S ---@type table settings read from the TaskNotes plugin
-local zed = false -- started by a Zed task: tasks open in Zed, nvim quits when done
-
-local function zed_quit()
-  if zed then
-    vim.cmd("silent! wall")
-    -- Deferred so closing pickers and inputs finish before nvim exits
-    vim.defer_fn(function()
-      vim.cmd("qa")
-    end, 100)
-  end
-end
 
 -- Dates -----------------------------------------------------------------------
 
@@ -936,24 +925,9 @@ for _, k in ipairs(key_actions) do
   input_keys["<a-" .. k[1] .. ">"] = { k[2], mode = { "n", "i" }, desc = k[3] }
 end
 
----@param opts { vault: string, zed?: boolean }
+---@param opts { vault: string }
 function M.setup(opts)
   vault = opts.vault
-  zed = opts.zed or false
-end
-
--- Open a task in Zed; falls back to nvim when the zed CLI is missing
-local function open_in_zed(picker, item)
-  if not item then
-    return picker:close()
-  end
-  local ok = pcall(function()
-    vim.system({ "zed", item.file }):wait(5000)
-  end)
-  if ok then
-    return picker:close()
-  end
-  picker:action("jump")
 end
 
 ---@param views table[]
@@ -1001,8 +975,6 @@ local function open_picker(views, view, label, project)
     actions = actions,
     focus = "list",
     win = { input = { keys = input_keys }, list = { keys = list_keys } },
-    confirm = zed and open_in_zed or nil,
-    on_close = zed and zed_quit or nil,
   }))
 end
 
@@ -1011,14 +983,13 @@ function M.open(view)
   open_picker(global_views, view or 1)
 end
 
--- Note name of the current buffer (in Zed: the file open there) when it is a vault note tagged as project
+-- Note name of the current buffer when it is a vault note tagged as project
 local function current_project()
-  local path = zed and (vim.env.ZED_FILE or "") or vim.api.nvim_buf_get_name(0)
+  local path = vim.api.nvim_buf_get_name(0)
   if path == "" or not path:match("%.md$") then
     return nil
   end
-  local lines = zed and read_lines(path) or vim.api.nvim_buf_get_lines(0, 0, -1, false)
-  local fm = parse_frontmatter(lines)
+  local fm = parse_frontmatter(vim.api.nvim_buf_get_lines(0, 0, -1, false))
   if fm and (has_tag(fm.tags, "projekt") or has_tag(fm.tags, "project")) then
     return vim.fn.fnamemodify(path, ":t:r")
   end
@@ -1045,8 +1016,6 @@ function M.open_project(project)
   vim.ui.select(list, { prompt = "Projekt" }, function(choice)
     if choice then
       open_picker(project_views(choice), 1, "󰉋 " .. choice, choice)
-    else
-      zed_quit()
     end
   end)
 end
@@ -1058,7 +1027,7 @@ function M.new(opts)
   load_settings()
   vim.ui.input({ prompt = "Neue Aufgabe: " }, function(title)
     if not title or vim.trim(title) == "" then
-      return zed_quit()
+      return
     end
     vim.ui.input({ prompt = "Termin (heute, morgen, +3, fr, 24.12., leer = keiner): " }, function(input)
       local date = parse_date_input(input or "")
@@ -1066,7 +1035,6 @@ function M.new(opts)
       if path then
         vim.notify("Aufgabe angelegt: " .. vim.fn.fnamemodify(path, ":t:r"))
       end
-      zed_quit()
     end)
   end)
 end
